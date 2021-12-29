@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-rest
+  namespace: kube-logs
+spec:
+  selector:
+    app: es
+  ports:
+    - port: 9200
+      targetPort: 9200
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-discovery
+  namespace: kube-logs
+spec:
+  clusterIP: None
+  selector:
+    app: es
+  ports:
+    - port: 9300
+      targetPort: 9300
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: es-configmap
+  namespace: kube-logs
+data:
+  elasticsearch.yml: |
+    cluster.name: es-logs-cluster
+    network.host: "0.0.0.0"
+    discovery.seed_hosts: "es-cluster-0.es-discovery.kube-logs.svc.cluster.local,es-cluster-1.es-discovery.kube-logs.svc.cluster.local,es-cluster-3.es-discovery.kube-logs.svc.cluster.local"
+    cluster.initial_master_nodes: "es-cluster-0,es-cluster-1,es-cluster-2"
+    xpack.security.enabled: false
+    xpack.monitoring.enabled: false
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: es-cluster
+  namespace: kube-logs
+spec:
+  selector:
+    matchLabels:
+      app: es
+  serviceName: es-discovery
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: es
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: es
+          image: docker.elastic.co/elasticsearch/elasticsearch:7.15.2
+          securityContext:
+            privileged: true
+            runAsUser: 1000
+            capabilities:
+              add:
+                - IPC_LOCK
+                - SYS_RESOURCE
+          resources:
+            limits:
+              cpu: 1000m
+            requests:
+              cpu: 100m
+          ports:
+            - containerPort: 9200
+              name: es-rest
+              protocol: TCP
+            - containerPort: 9300
+              name: es-discovery
+              protocol: TCP
+          env:
+            - name: ES_JAVA_OPTS
+              value: "-Xms512m -Xmx512m"
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+            - name: es-config-volume
+              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+              subPath: elasticsearch.yml
+      initContainers:
+        - name: fix-data-permissions
+          image: busybox
+          command: ["sh", "-c", "chown -R 1000:1000 /usr/share/elasticsearch/data"]
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+        - name: increase-fd-ulimit
+          image: busybox
+          command: ["sh", "-c", "ulimit -n 65536"]
+          securityContext:
+            privileged: true
+        - name: init-sysctl
+          image: busybox
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command: ["sysctl", "-w", "vm.max_map_count=262144"]
+      volumes:
+        - name: es-config-volume
+          configMap:
+            name: es-configmap
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        namespace: kube-logs
+        labels:
+          app: es
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: do-block-storage
+        resources:
+          requests:
+            storage: 2Gi

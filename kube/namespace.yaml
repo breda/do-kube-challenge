@@ -1,0 +1,11 @@
+# The logs namespace will hold all logging related services/pods
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-logs
+---
+# The app namespace will hold our app instances
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-app
